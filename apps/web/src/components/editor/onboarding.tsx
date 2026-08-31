@@ -63,17 +63,6 @@ export function Onboarding() {
 					</div>
 				);
 			case 2:
-				return (
-					<div className="space-y-5">
-						<div className="space-y-3">
-							<Title title={getStepTitle()} />
-							<Description
-								description={`Join our [Discord](${SOCIAL_LINKS.discord}), chat with cool people and share feedback to help make Finalcliper the best editor ever.`}
-							/>
-						</div>
-						<NextButton onClick={handleClose}>Finish</NextButton>
-					</div>
-				);
 			default:
 				return null;
 		}
