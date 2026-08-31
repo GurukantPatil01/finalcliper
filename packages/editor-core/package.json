@@ -1,0 +1,72 @@
+{
+	"name": "@finalcliper/editor-core",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Headless, framework-agnostic editing engine for finalcliper: EditorCore + managers, timeline/ripple/retime/placement, commands, storage, renderer graph, and the frozen EDL v1 bridge contract.",
+	"license": "MIT",
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts",
+		"./edl": "./src/edl/index.ts",
+		"./captions": "./src/captions/index.ts",
+		"./wasm": "./src/wasm/index.ts",
+		"./react": "./react/index.ts",
+		"./services/renderer/compositor/wasm-compositor": "./src/services/renderer/compositor/wasm-compositor.ts",
+		"./services/renderer/compositor/types": "./src/services/renderer/compositor/types.ts",
+		"./services/renderer/canvas-renderer": "./src/services/renderer/canvas-renderer.ts",
+		"./services/renderer/scene-builder": "./src/services/renderer/scene-builder.ts",
+		"./services/renderer/nodes/root-node": "./src/services/renderer/nodes/root-node.ts",
+		"./commands": "./src/commands/index.ts",
+		"./timeline": "./src/timeline/index.ts",
+		"./timeline/audio-constants": "./src/timeline/audio-constants.ts",
+		"./params": "./src/params/index.ts",
+		"./params/registry": "./src/params/registry.ts",
+		"./effects": "./src/effects/index.ts",
+		"./effects/definitions/adjust": "./src/effects/definitions/adjust.ts",
+		"./effects/definitions/filter": "./src/effects/definitions/filter.ts",
+		"./stickers": "./src/stickers/index.ts",
+		"./stickers/categories": "./src/stickers/categories.ts",
+		"./retime": "./src/retime/index.ts",
+		"./fonts/local-fonts": "./src/fonts/local-fonts.ts",
+		"./graphics": "./src/graphics/index.ts",
+		"./sounds/local-sounds": "./src/sounds/local-sounds.ts",
+		"./export": "./src/export/index.ts",
+		"./selection": "./src/selection/editor-selection.ts",
+		"./*": "./src/*",
+		"./media/waveform-summary": "./src/media/waveform-summary.ts",
+		"./media/dead-space": "./src/media/dead-space.ts",
+		"./media/dead-space-analysis": "./src/media/dead-space-analysis.ts",
+		"./timeline/dead-space-cut": "./src/timeline/dead-space-cut.ts",
+		"./services/waveform-cache": "./src/services/waveform-cache/service.ts",
+		"./media/native-paths": "./src/media/native-paths.ts",
+		"./text/typography": "./src/text/typography.ts",
+		"./export/overlay-frames": "./src/export/overlay-frames.ts"
+	},
+	"scripts": {
+		"check-types": "tsc --project tsconfig.json --noEmit",
+		"check-headless": "bun ../../scripts/check-headless.mjs",
+		"test": "bun test src",
+		"generate:golden-edl": "bun --preload ./src/test-support/wasm-preload.ts scripts/generate-golden-edl.ts"
+	},
+	"dependencies": {
+		"culori": "^4.0.2",
+		"eventemitter3": "^5.0.1",
+		"mediabunny": "^1.29.1",
+		"opencut-wasm": "file:../../rust/wasm/pkg",
+		"soundtouchjs": "^0.3.0"
+	},
+	"peerDependencies": {
+		"react": "^19.0.0"
+	},
+	"peerDependenciesMeta": {
+		"react": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@types/bun": "latest",
+		"@types/culori": "^4.0.1",
+		"@types/react": "^19",
+		"typescript": "^5.8.3"
+	}
+}

@@ -1,0 +1,154 @@
+import { describe, expect, test } from "bun:test";
+import {
+	buildCaptionElementsFromTranscript,
+	type TranscriptSegmentInput,
+} from "../generate";
+import { TICKS_PER_SECOND, mediaTime, ZERO_MEDIA_TIME } from "@/wasm";
+import { DEFAULT_CAPTION_STYLE_PRESET_ID } from "../styles";
+
+/** A pre-transcribed, already-smoothed fixture — the shape
+ * `NativeBridge.transcribe()` produces after native-bridge's mandatory
+ * smoothing pass. Two segments, word-level microsecond timestamps, no
+ * overlap — deliberately simple/hand-authored (not the real jfk.wav DTW
+ * capture that native-bridge's own tests use) since this module's job is
+ * purely the microseconds->ticks conversion and per-segment element
+ * shaping, not smoothing-quality verification (that is native-bridge's
+ * `caption-smoothing.test.ts`, already covered by the previous session).
+ */
+const FIXTURE_SEGMENTS: TranscriptSegmentInput[] = [
+	{
+		startMicros: 1_000_000,
+		endMicros: 3_500_000,
+		text: "and so my fellow Americans",
+		words: [
+			{ text: "and", startMicros: 1_000_000, endMicros: 1_200_000 },
+			{ text: "so", startMicros: 1_200_000, endMicros: 1_400_000 },
+			{ text: "my", startMicros: 1_400_000, endMicros: 1_600_000 },
+			{ text: "fellow", startMicros: 1_600_000, endMicros: 2_000_000 },
+			{ text: "Americans", startMicros: 2_000_000, endMicros: 3_500_000 },
+		],
+	},
+	{
+		startMicros: 4_000_000,
+		endMicros: 5_000_000,
+		text: "ask not",
+		words: [
+			{ text: "ask", startMicros: 4_000_000, endMicros: 4_400_000 },
+			{ text: "not", startMicros: 4_400_000, endMicros: 5_000_000 },
+		],
+	},
+];
+
+describe("buildCaptionElementsFromTranscript", () => {
+	// One element per caption PAGE, not per segment: generation chunks a
+	// segment at CHUNK_MAX_WORDS (4) so a long sentence never sits on screen
+	// as one wall of text. The fixture's 5-word segment therefore yields two
+	// pages (4 + 1) and its 2-word segment one, for three elements.
+	test("produces one caption element per chunked page", () => {
+		const elements = buildCaptionElementsFromTranscript({
+			segments: FIXTURE_SEGMENTS,
+			timelineStartTime: ZERO_MEDIA_TIME,
+		});
+		expect(elements).toHaveLength(3);
+		expect(elements.every((e) => e.type === "caption")).toBe(true);
+	});
+
+	test("converts segment start/duration from microseconds to ticks exactly", () => {
+		const elements = buildCaptionElementsFromTranscript({
+			segments: FIXTURE_SEGMENTS,
+			timelineStartTime: ZERO_MEDIA_TIME,
+		});
+		// Each page spans exactly its own words (page 1: 1.0->2.0, page 2:
+		// 2.0->3.5, page 3: 4.0->5.0), all exact — no rounding is needed for
+		// whole/tenth-second inputs at a 120000 tick rate.
+		expect(elements[0].startTime).toBe(mediaTime({ ticks: TICKS_PER_SECOND * 1 }));
+		expect(elements[0].duration).toBe(mediaTime({ ticks: TICKS_PER_SECOND * 1 }));
+		expect(elements[1].startTime).toBe(mediaTime({ ticks: TICKS_PER_SECOND * 2 }));
+		expect(elements[1].duration).toBe(mediaTime({ ticks: TICKS_PER_SECOND * 1.5 }));
+		expect(elements[2].startTime).toBe(mediaTime({ ticks: TICKS_PER_SECOND * 4 }));
+		expect(elements[2].duration).toBe(mediaTime({ ticks: TICKS_PER_SECOND * 1 }));
+	});
+
+	test("offsets segment start times by timelineStartTime so captions land in sync with the transcribed clip", () => {
+		const offset = mediaTime({ ticks: TICKS_PER_SECOND * 10 });
+		const elements = buildCaptionElementsFromTranscript({
+			segments: FIXTURE_SEGMENTS,
+			timelineStartTime: offset,
+		});
+		expect(elements[0].startTime).toBe(mediaTime({ ticks: TICKS_PER_SECOND * 11 }));
+		expect(elements[1].startTime).toBe(mediaTime({ ticks: TICKS_PER_SECOND * 12 }));
+		expect(elements[2].startTime).toBe(mediaTime({ ticks: TICKS_PER_SECOND * 14 }));
+	});
+
+	test("word times are relative to their OWN page's start, not the transcript's absolute start", () => {
+		const elements = buildCaptionElementsFromTranscript({
+			segments: FIXTURE_SEGMENTS,
+			timelineStartTime: ZERO_MEDIA_TIME,
+		});
+		if (elements[0].type !== "caption") throw new Error("expected caption element");
+		const words = elements[0].words;
+		expect(words).toHaveLength(4);
+		expect(words[0].text).toBe("and");
+		expect(words[0].startTime).toBe(ZERO_MEDIA_TIME); // page's own word 0 starts at t=0
+		expect(words[3].text).toBe("fellow");
+		// last word ends exactly at the page's own duration (2.0s - 1.0s = 1.0s)
+		expect(words[3].endTime).toBe(mediaTime({ ticks: TICKS_PER_SECOND * 1 }));
+	});
+
+	test("word times are monotonically non-decreasing within a segment", () => {
+		const elements = buildCaptionElementsFromTranscript({
+			segments: FIXTURE_SEGMENTS,
+			timelineStartTime: ZERO_MEDIA_TIME,
+		});
+		for (const element of elements) {
+			if (element.type !== "caption") continue;
+			let cursor = 0;
+			for (const word of element.words) {
+				expect(word.startTime).toBeGreaterThanOrEqual(cursor);
+				expect(word.endTime).toBeGreaterThan(word.startTime);
+				cursor = word.endTime;
+			}
+		}
+	});
+
+	test("trimStart/trimEnd start at zero — a fresh, unsplit caption element", () => {
+		const elements = buildCaptionElementsFromTranscript({
+			segments: FIXTURE_SEGMENTS,
+			timelineStartTime: ZERO_MEDIA_TIME,
+		});
+		for (const element of elements) {
+			expect(element.trimStart).toBe(ZERO_MEDIA_TIME);
+			expect(element.trimEnd).toBe(ZERO_MEDIA_TIME);
+		}
+	});
+
+	test("skips segments with zero words (non-speech spans)", () => {
+		const elements = buildCaptionElementsFromTranscript({
+			segments: [
+				...FIXTURE_SEGMENTS,
+				{ startMicros: 6_000_000, endMicros: 7_000_000, text: "", words: [] },
+			],
+			timelineStartTime: ZERO_MEDIA_TIME,
+		});
+		expect(elements).toHaveLength(3);
+	});
+
+	test("applies the default style preset's params when none is given", () => {
+		const elements = buildCaptionElementsFromTranscript({
+			segments: FIXTURE_SEGMENTS,
+			timelineStartTime: ZERO_MEDIA_TIME,
+		});
+		expect(elements[0].params.stylePresetId).toBe(DEFAULT_CAPTION_STYLE_PRESET_ID);
+		expect(typeof elements[0].params.highlightColor).toBe("string");
+	});
+
+	test("applies an explicitly requested style preset", () => {
+		const elements = buildCaptionElementsFromTranscript({
+			segments: FIXTURE_SEGMENTS,
+			timelineStartTime: ZERO_MEDIA_TIME,
+			stylePresetId: "finalcliper-cyan",
+		});
+		expect(elements[0].params.stylePresetId).toBe("finalcliper-cyan");
+		expect(elements[0].params.highlightColor).toBe("#00CAE0");
+	});
+});

@@ -1,0 +1,78 @@
+import { FolderOpen, Music } from "lucide-react";
+import { CC_ICON_STROKE } from "../../tokens";
+import { PanelSheet } from "../panel-sheet";
+import { SheetHeader } from "../sheet-header";
+import type { EditorCore } from "@finalcliper/editor-core";
+import { getLocalSounds } from "@finalcliper/editor-core/sounds/local-sounds";
+import { importAndPlaceAudio, insertLocalSound } from "../../editor/actions";
+import { useState } from "react";
+
+interface AudioPanelProps {
+	editor: EditorCore;
+	onClose: () => void;
+	onInserted: (ref: { trackId: string; elementId: string }) => void;
+}
+
+/**
+ * M8 Audio panel — plan M8 item 3: "The Freesound proxy... is cut... Ship
+ * a small bundled local sound set instead." Lists `getLocalSounds()`
+ * (real, zero-network, procedurally-synthesized WAV data URIs — see
+ * `sounds/local-sounds.ts`). Per-clip volume/speed/reverse for an inserted
+ * sound are the SAME retimable controls the Edit panel exposes once the
+ * clip is selected — not duplicated here.
+ */
+export function AudioPanel({ editor, onClose, onInserted }: AudioPanelProps) {
+	const sounds = getLocalSounds();
+	const [importing, setImporting] = useState(false);
+	const [importError, setImportError] = useState<string | null>(null);
+	return (
+		<PanelSheet onScrimClick={onClose} header={<SheetHeader onClose={onClose} />}>
+			{/* Round 22 (founder): Files-picker audio import onto the audio
+			    track. Native shells open the real document picker; the web
+			    harness's fallback bridge reports its own honest error. */}
+			<button
+				type="button"
+				className="cc-panel-actions__btn"
+				disabled={importing}
+				onClick={() => {
+					setImporting(true);
+					setImportError(null);
+					importAndPlaceAudio({ editor })
+						.then((count) => {
+							if (count > 0) onClose();
+						})
+						.catch((error: unknown) =>
+							setImportError(error instanceof Error ? error.message : String(error)),
+						)
+						.finally(() => setImporting(false));
+				}}
+			>
+				<FolderOpen size={20} strokeWidth={CC_ICON_STROKE} />
+				<span>{importing ? "Importing…" : "Import audio from Files"}</span>
+			</button>
+			{importError && <p className="cc-panel-note">{importError}</p>}
+			<p className="cc-panel-note">Bundled local sounds — no network, no CapCut library clone.</p>
+			<div className="cc-panel-actions">
+				{sounds.map((sound) => (
+					<button
+						key={sound.id}
+						type="button"
+						className="cc-panel-actions__btn"
+						onClick={() => {
+							const ref = insertLocalSound({
+								editor,
+								sourceUrl: sound.sourceUrl,
+								name: sound.name,
+								durationSeconds: sound.durationSeconds,
+							});
+							if (ref) onInserted(ref);
+						}}
+					>
+						<Music size={20} strokeWidth={CC_ICON_STROKE} />
+						<span>{sound.name}</span>
+					</button>
+				))}
+			</div>
+		</PanelSheet>
+	);
+}

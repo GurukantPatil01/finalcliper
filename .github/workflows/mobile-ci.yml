@@ -1,0 +1,172 @@
+name: Mobile CI
+
+# finalcliper M3 — plan M3 exit criterion: "CI produces a signed APK and an
+# installable iOS build (ad-hoc or unsigned .ipa) from a clean checkout."
+# This workflow covers the unsigned/debug half of that (iOS simulator build
+# with CODE_SIGNING_ALLOWED=NO, Android debug APK via gradle) — the same two
+# builds verified locally in the M3 session, run on EVERY push/PR to `main`
+# so debug builds never silently rot.
+#
+# The signed-release half of that exit criterion (real Android release
+# keystore signing + an unsigned iOS device .ipa for direct distribution,
+# plan §8.0 item 5: no App Store / Play Store release) now lives in
+# .github/workflows/release.yml, gated behind a `v*.*.*` tag push rather
+# than every push — see docs/RELEASING.md. This workflow's iOS build
+# intentionally still targets the Simulator, not a device: local signing
+# is flaky from agent sessions, and there is deliberately no CI-held Apple
+# signing identity anywhere in this project (release.yml's iOS artifact is
+# unsigned by design — see that workflow's header comment for why).
+
+concurrency:
+  group: mobile-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "*.md"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "*.md"
+
+jobs:
+  ios-simulator-build:
+    name: iOS (simulator, unsigned)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76
+        with:
+          bun-version: 1.2.18
+
+      - name: Cache Bun modules
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.2.18-${{ hashFiles('bun.lock') }}
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build the M3 shell harness (apps/mobile/www)
+        run: bun run build
+        working-directory: apps/mobile
+
+      - name: cap sync ios
+        # Copies www/ into ios/App/App/public and updates the plugin list —
+        # both gitignored, regenerated here on every run (see
+        # apps/mobile/.gitignore's comment on why).
+        run: bunx cap sync ios
+        working-directory: apps/mobile
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: xcodebuild (Debug, iphonesimulator, CODE_SIGNING_ALLOWED=NO)
+        run: |
+          xcodebuild \
+            -project App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+        working-directory: apps/mobile/ios/App
+
+  android-debug-build:
+    name: Android (debug APK)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76
+        with:
+          bun-version: 1.2.18
+
+      - name: Cache Bun modules
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.2.18-${{ hashFiles('bun.lock') }}
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK (platform 36, build-tools 36.0.0)
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-36 build-tools;36.0.0 platform-tools"
+
+      - name: Build the M3 shell harness (apps/mobile/www)
+        run: bun run build
+        working-directory: apps/mobile
+
+      - name: cap sync android
+        run: bunx cap sync android
+        working-directory: apps/mobile
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('apps/mobile/android/**/*.gradle*') }}
+
+      - name: gradlew testDebugUnitTest
+        # finalcliper M4/M9: the Android-framework-free helpers
+        # (media/MediaMath.kt; edl/EdlParser.kt + export/TransitionAlphaMath.kt
+        # + export/EdlTicks.kt as of M9) run as plain JVM unit tests — no
+        # emulator needed. The rest of M4/M9's native pipeline
+        # (MediaProbe/ThumbnailStripGenerator/MediaImporter/MediaPickerIntents;
+        # EdlToComposition/Media3Exporter's golden-frame harness) is
+        # instrumentation-only (app/src/androidTest) and is NOT run here —
+        # ubuntu-latest runners have no Android emulator; see the M4/M9
+        # handoffs for why that verification is still open.
+        run: ./gradlew testDebugUnitTest --console=plain
+        working-directory: apps/mobile/android
+
+      - name: gradlew assembleDebug
+        run: ./gradlew assembleDebug --console=plain
+        working-directory: apps/mobile/android
+
+      - name: gradlew :app:assembleDebugAndroidTest
+        # finalcliper M9: compiles + packages the instrumentation tests
+        # (including ExportGoldenFrameInstrumentedTest.kt) against the real
+        # Android SDK/Media3 API surface on every push — catches a signature
+        # regression immediately even though the tests themselves still need
+        # a device/emulator to actually run (see the M9 handoff).
+        #
+        # Scoped to `:app:` deliberately, NOT the bare `assembleDebugAndroidTest`
+        # (which also builds every OTHER subproject's androidTest variant):
+        # `capacitor-cordova-android-plugins`'s androidTest variant hits a
+        # pre-existing `checkDebugAndroidTestDuplicateClasses` kotlin-stdlib
+        # version conflict (1.8.22 vs. a cordova-bundled 1.6.21) that has
+        # nothing to do with this app module or M9 — confirmed by reproducing
+        # it locally with the bare task and NOT with this scoped one. Fixing
+        # that pre-existing cross-module conflict is out of scope here.
+        run: ./gradlew :app:assembleDebugAndroidTest --console=plain
+        working-directory: apps/mobile/android
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: finalcliper-debug.apk
+          path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

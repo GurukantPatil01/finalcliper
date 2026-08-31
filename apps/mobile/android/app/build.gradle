@@ -1,0 +1,145 @@
+apply plugin: 'com.android.application'
+// kneecap M4: Kotlin toolchain for NativeBridgePlugin's M4 additions.
+apply plugin: 'org.jetbrains.kotlin.android'
+
+// kneecap M12/M13 — direct-distribution release signing (plan M13
+// operative section: "signed APK (own keystore, held in CI secrets...)
+// attached to GitHub Releases"). No secret material lives in this repo
+// or this file: the keystore itself and its passwords come from four
+// environment variables that only exist inside the CI job that runs
+// `.github/workflows/release.yml` (populated from repo/environment
+// secrets — see docs/RELEASING.md for the one-time setup a human does
+// once, outside of any agent session, with `keytool`).
+//
+// If those env vars are absent (every local dev build, and any CI run
+// that isn't the release workflow), `signingConfigs.release` is simply
+// never created and the `release` build type falls back to Android's
+// default unsigned release output — `assembleRelease` still succeeds,
+// it just doesn't produce an installable-without-resigning APK. This is
+// deliberate: it keeps `./gradlew assembleRelease` safe to run from any
+// machine (including this worktree) without ever needing the secrets.
+def releaseKeystorePath = System.getenv("KNEECAP_RELEASE_KEYSTORE")
+def releaseKeystoreFile = releaseKeystorePath ? file(releaseKeystorePath) : null
+def hasReleaseSigning = releaseKeystoreFile != null && releaseKeystoreFile.exists()
+
+android {
+    namespace = "dev.kneecap.app"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "dev.kneecap.app"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // On-device captions: libkneecap_whisper.so (whisper.cpp + the JNI
+        // glue in src/main/cpp). arm64-v8a only — it is every current real
+        // Android phone and the Apple-silicon emulator image, and each extra
+        // ABI roughly doubles both native build time and APK size for a
+        // 77MB-model feature. The library is skipped entirely (see
+        // src/main/cpp/CMakeLists.txt) when scripts/fetch-whisper-cpp.sh has
+        // not been run, so this never breaks a plain `assembleDebug`.
+        ndk {
+            abiFilters "arm64-v8a"
+        }
+        externalNativeBuild {
+            cmake {
+                arguments "-DANDROID_STL=c++_static"
+            }
+        }
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+            version "3.22.1"
+        }
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile releaseKeystoreFile
+                storePassword System.getenv("KNEECAP_RELEASE_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("KNEECAP_RELEASE_KEY_ALIAS")
+                keyPassword System.getenv("KNEECAP_RELEASE_KEY_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+    compileOptions {
+        // Matches capacitor-android's own compileOptions (javac target 21) —
+        // Kotlin's jvmTarget must match or compileDebugKotlin fails with
+        // "Inconsistent JVM-target compatibility".
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+    kotlinOptions {
+        jvmTarget = "21"
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation "androidx.activity:activity:$androidxActivityVersion"
+    implementation project(':capacitor-android')
+    // kneecap M4/M9 (corpus 08 §8): Media3 Transformer drives the native
+    // short-GOP preview-proxy transcode on import AND the M9 EDL export.
+    // media3-effect brings `Presentation` (downscale-to-height) and the
+    // custom cross-fade compositor. No media3-exoplayer dependency —
+    // metadata probing uses the standard SDK's MediaMetadataRetriever/
+    // MediaExtractor, not ExoPlayer.
+    //
+    // Version lives in variables.gradle ($media3Version, currently 1.11.0).
+    // Merge note (M1 spike + M4/M9 tracks pinned this independently and
+    // agreed on 1.11.0): verified directly against androidx/media's
+    // RELEASENOTES.md on 2026-08-17 that no cross-clip video
+    // transition/crossfade support has landed upstream — plan risk-register
+    // item #4 ("Media3 has no cross-clip transitions... as of Media3 1.10")
+    // still holds at 1.11.0, which is exactly why M9's cross-fade is the
+    // hand-written `CrossfadeCompositorSettings`/`TransitionAlphaMath` pair
+    // rather than a stock Transformer feature. The M1 spike's
+    // SpikeDiagnosticsPlugin (throwaway) shares these same three artifacts
+    // for its sequential-export test.
+    implementation "androidx.media3:media3-transformer:$media3Version"
+    implementation "androidx.media3:media3-common:$media3Version"
+    implementation "androidx.media3:media3-effect:$media3Version"
+    testImplementation "junit:junit:$junitVersion"
+    // kneecap M9 — see variables.gradle's orgJsonVersion doc comment.
+    testImplementation "org.json:json:$orgJsonVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

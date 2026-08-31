@@ -1,0 +1,366 @@
+import type { ElementAnimations } from "@/animation/types";
+import type { Effect } from "@/effects/types";
+import type { Mask } from "@/masks/types";
+import type { ParamValues } from "@/params";
+import type { MediaTime } from "@/wasm";
+
+export type ElementRef = {
+	trackId: string;
+	elementId: string;
+};
+
+export interface Bookmark {
+	time: MediaTime;
+	note?: string;
+	color?: string;
+	duration?: MediaTime;
+}
+
+export interface TScene {
+	id: string;
+	name: string;
+	isMain: boolean;
+	tracks: SceneTracks;
+	/**
+	 * Main-track transitions, keyed by the clip they FOLLOW (must be
+	 * immediately followed by another main-track clip). Optional so scenes
+	 * persisted before transitions existed load unchanged (undefined == []).
+	 * Semantics are the native exporter's (MainTrackPlacement.swift): the
+	 * incoming clip is pulled earlier by the transition duration so the two
+	 * overlap — the timeline COMPRESSES by that duration.
+	 */
+	transitions?: TSceneTransition[];
+	bookmarks: Bookmark[];
+	createdAt: Date;
+	updatedAt: Date;
+}
+
+export interface TSceneTransition {
+	id: string;
+	/** The main-track element this transition follows. */
+	afterElementId: string;
+	/** "fade" | "slide" | "zoom" — v1 renders every kind as a cross-fade in
+	 *  both preview and native export (the Swift compositor's documented
+	 *  fallback); the kind is carried so richer renders slot in later. */
+	kind: string;
+	/** Overlap duration in ticks (MediaTime). */
+	duration: MediaTime;
+}
+
+export type TrackType =
+	| "video"
+	| "text"
+	| "audio"
+	| "graphic"
+	| "effect"
+	| "caption";
+
+interface BaseTrack {
+	id: string;
+	name: string;
+}
+
+export interface VideoTrack extends BaseTrack {
+	type: "video";
+	elements: (VideoElement | ImageElement)[];
+	muted: boolean;
+	hidden: boolean;
+}
+
+export interface TextTrack extends BaseTrack {
+	type: "text";
+	elements: TextElement[];
+	hidden: boolean;
+}
+
+export interface CaptionTrack extends BaseTrack {
+	type: "caption";
+	elements: CaptionElement[];
+	hidden: boolean;
+}
+
+export interface AudioTrack extends BaseTrack {
+	type: "audio";
+	elements: AudioElement[];
+	muted: boolean;
+}
+
+export interface GraphicTrack extends BaseTrack {
+	type: "graphic";
+	elements: (StickerElement | GraphicElement)[];
+	hidden: boolean;
+}
+
+export interface EffectTrack extends BaseTrack {
+	type: "effect";
+	elements: EffectElement[];
+	hidden: boolean;
+}
+
+export type TimelineTrack =
+	| VideoTrack
+	| TextTrack
+	| AudioTrack
+	| GraphicTrack
+	| EffectTrack
+	| CaptionTrack;
+
+export type OverlayTrack =
+	| VideoTrack
+	| TextTrack
+	| GraphicTrack
+	| EffectTrack
+	| CaptionTrack;
+
+export interface SceneTracks {
+	overlay: OverlayTrack[];
+	main: VideoTrack;
+	audio: AudioTrack[];
+}
+
+export interface RetimeConfig {
+	rate: number;
+	maintainPitch?: boolean;
+}
+
+interface BaseAudioElement extends BaseTimelineElement {
+	type: "audio";
+	buffer?: AudioBuffer;
+	retime?: RetimeConfig;
+}
+
+export interface UploadAudioElement extends BaseAudioElement {
+	sourceType: "upload";
+	mediaId: string;
+}
+
+export interface LibraryAudioElement extends BaseAudioElement {
+	sourceType: "library";
+	sourceUrl: string;
+}
+
+export type AudioElement = UploadAudioElement | LibraryAudioElement;
+
+interface BaseTimelineElement {
+	id: string;
+	name: string;
+	duration: MediaTime;
+	startTime: MediaTime;
+	trimStart: MediaTime;
+	trimEnd: MediaTime;
+	sourceDuration?: MediaTime;
+	animations?: ElementAnimations;
+	params: ParamValues;
+}
+
+export interface VideoElement extends BaseTimelineElement {
+	type: "video";
+	mediaId: string;
+	isSourceAudioEnabled?: boolean;
+	hidden?: boolean;
+	retime?: RetimeConfig;
+	effects?: Effect[];
+	masks?: Mask[];
+}
+
+export interface ImageElement extends BaseTimelineElement {
+	type: "image";
+	mediaId: string;
+	hidden?: boolean;
+	effects?: Effect[];
+	masks?: Mask[];
+}
+
+export interface TextElement extends BaseTimelineElement {
+	type: "text";
+	hidden?: boolean;
+	effects?: Effect[];
+}
+
+/**
+ * One word-level caption span. `startTime`/`endTime` are ticks in the SAME
+ * "source" coordinate space as the element's own `trimStart`/`trimEnd` — the
+ * origin (tick 0) is the caption clip's original, unsplit generation point,
+ * exactly mirroring how a video clip's source ticks are independent of where
+ * the clip currently sits on the timeline. This is deliberate, not
+ * incidental: `SplitElementsCommand` (commands/timeline/element/split-elements.ts)
+ * already bumps `trimStart`/`trimEnd` uniformly for every element type,
+ * including generated content with no real source media (retime is undefined
+ * for captions, so `getSourceSpanAtClipTime` degrades to the identity
+ * mapping) — so a split caption clip needs ZERO special-cased word-time
+ * remapping. At render/EDL-build time the active word is found by comparing
+ * `trimStart + localTime` (the same "source local time" every other node
+ * computes, see `services/renderer/resolve.ts`) against each word's
+ * `[startTime, endTime)`. Both fields come from `TranscriptWord.startMicros`/
+ * `endMicros` (native-bridge) converted once via `mediaTimeFromSeconds` — see
+ * `captions/generate.ts`.
+ */
+export interface CaptionWord {
+	text: string;
+	startTime: MediaTime;
+	endTime: MediaTime;
+}
+
+export interface CaptionElement extends BaseTimelineElement {
+	type: "caption";
+	hidden?: boolean;
+	effects?: Effect[];
+	/** Word-level timing for the FULL, unsplit source segment — see
+	 * `CaptionWord`'s doc comment. Never sliced on split/trim; consumers
+	 * filter to the visible `[trimStart, trimStart+duration)` window. Always
+	 * sorted by `startTime` and non-overlapping (guaranteed by the mandatory
+	 * `caption-smoothing.ts` pass upstream, in native-bridge). */
+	words: CaptionWord[];
+}
+
+export interface StickerElement extends BaseTimelineElement {
+	type: "sticker";
+	stickerId: string;
+	/** Natural dimensions of the sticker asset, stored at insert time. Used by renderer and preview bounds to avoid split-brain geometry. */
+	intrinsicWidth?: number;
+	intrinsicHeight?: number;
+	hidden?: boolean;
+	effects?: Effect[];
+}
+
+export interface GraphicElement extends BaseTimelineElement {
+	type: "graphic";
+	definitionId: string;
+	hidden?: boolean;
+	effects?: Effect[];
+	masks?: Mask[];
+}
+
+export interface EffectElement extends BaseTimelineElement {
+	type: "effect";
+	effectType: string;
+}
+
+export type ElementUpdatePatch = { params?: Partial<ParamValues> };
+
+export type TimelineElement =
+	| AudioElement
+	| VideoElement
+	| ImageElement
+	| TextElement
+	| StickerElement
+	| GraphicElement
+	| EffectElement
+	| CaptionElement;
+
+export type ElementType = TimelineElement["type"];
+
+function elementTypes<T extends ElementType[]>(...types: T): T {
+	return types;
+}
+
+export const MASKABLE_ELEMENT_TYPES = elementTypes("video", "image", "graphic");
+
+export type MaskableElement = Extract<
+	TimelineElement,
+	{ type: (typeof MASKABLE_ELEMENT_TYPES)[number] }
+>;
+
+export const RETIMABLE_ELEMENT_TYPES = elementTypes("video", "audio");
+
+export type RetimableElement = Extract<
+	TimelineElement,
+	{ type: (typeof RETIMABLE_ELEMENT_TYPES)[number] }
+>;
+
+export const VISUAL_ELEMENT_TYPES = elementTypes(
+	"video",
+	"image",
+	"text",
+	"sticker",
+	"graphic",
+	"caption",
+);
+
+export type VisualElement = Extract<
+	TimelineElement,
+	{ type: (typeof VISUAL_ELEMENT_TYPES)[number] }
+>;
+
+export type CreateUploadAudioElement = Omit<UploadAudioElement, "id">;
+export type CreateLibraryAudioElement = Omit<LibraryAudioElement, "id">;
+export type CreateAudioElement =
+	| CreateUploadAudioElement
+	| CreateLibraryAudioElement;
+export type CreateVideoElement = Omit<VideoElement, "id">;
+export type CreateImageElement = Omit<ImageElement, "id">;
+export type CreateTextElement = Omit<TextElement, "id">;
+export type CreateStickerElement = Omit<StickerElement, "id">;
+export type CreateGraphicElement = Omit<GraphicElement, "id">;
+export type CreateEffectElement = Omit<EffectElement, "id">;
+export type CreateCaptionElement = Omit<CaptionElement, "id">;
+export type CreateTimelineElement =
+	| CreateAudioElement
+	| CreateVideoElement
+	| CreateImageElement
+	| CreateTextElement
+	| CreateStickerElement
+	| CreateGraphicElement
+	| CreateEffectElement
+	| CreateCaptionElement;
+
+export interface ElementDragState {
+	isDragging: boolean;
+	elementId: string | null;
+	dragElementIds: string[];
+	dragTimeOffsets: Record<string, MediaTime>;
+	trackId: string | null;
+	startMouseX: number;
+	startMouseY: number;
+	startElementTime: MediaTime;
+	clickOffsetTime: MediaTime;
+	currentTime: MediaTime;
+	currentMouseY: number;
+}
+
+export type ElementDragView =
+	| { readonly kind: "idle" }
+	| {
+			readonly kind: "dragging";
+			readonly anchorElementId: string;
+			readonly trackId: string;
+			readonly memberTimeOffsets: ReadonlyMap<string, MediaTime>;
+			readonly startMouseX: number;
+			readonly startMouseY: number;
+			readonly startElementTime: MediaTime;
+			readonly clickOffsetTime: MediaTime;
+			readonly currentTime: MediaTime;
+			readonly currentMouseX: number;
+			readonly currentMouseY: number;
+			readonly dropTarget: DropTarget | null;
+	  };
+
+export interface DropTarget {
+	trackIndex: number;
+	isNewTrack: boolean;
+	insertPosition: "above" | "below" | null;
+	xPosition: MediaTime;
+	targetElement: { elementId: string; trackId: string } | null;
+}
+
+export interface ComputeDropTargetParams {
+	elementType: ElementType;
+	mouseX: number;
+	mouseY: number;
+	tracks: SceneTracks;
+	playheadTime: MediaTime;
+	isExternalDrop: boolean;
+	elementDuration: MediaTime;
+	pixelsPerSecond: number;
+	zoomLevel: number;
+	verticalDragDirection?: "up" | "down" | null;
+	startTimeOverride?: MediaTime;
+	excludeElementId?: string;
+	targetElementTypes?: string[];
+}
+
+export interface ClipboardItem {
+	trackId: string;
+	trackType: TrackType;
+	element: CreateTimelineElement;
+}

@@ -1,0 +1,678 @@
+import type { TProject, TProjectMetadata } from "@/project/types";
+import { getProjectDurationFromScenes } from "@/timeline/scenes";
+import type { MediaAsset } from "@/media/types";
+import {
+	resolveNativeMediaPath,
+	salvageRelativeMediaPathFromStaleUrl,
+} from "@/media/native-paths";
+import { IndexedDBAdapter } from "./indexeddb-adapter";
+import { OPFSAdapter } from "./opfs-adapter";
+import {
+	type StorageCapacityCheckResult,
+	StorageQuotaExceededError,
+	evaluateStorageCapacity,
+	isStorageQuotaExceededError,
+	readStorageQuotaStatus,
+} from "./quota";
+import type {
+	MediaAssetData,
+	StorageConfig,
+	SerializedProject,
+	SerializedScene,
+} from "./types";
+import type { SavedSoundsData, SavedSound, SoundEffect } from "@/sounds/types";
+import {
+	migrations,
+	runStorageMigrations,
+} from "@/services/storage/migrations";
+import type { Bookmark, SceneTracks, TScene } from "@/timeline";
+import { roundMediaTime } from "@/wasm";
+
+function normalizeBookmarks({ raw }: { raw: unknown }): Bookmark[] {
+	if (!Array.isArray(raw)) return [];
+	return raw
+		.map((item): Bookmark | null => {
+			if (typeof item === "number") {
+				return { time: roundMediaTime({ time: item }) };
+			}
+			const obj = item as Record<string, unknown>;
+			if (
+				typeof obj !== "object" ||
+				obj === null ||
+				typeof obj.time !== "number"
+			) {
+				return null;
+			}
+			return {
+				time: roundMediaTime({ time: obj.time }),
+				...(typeof obj.note === "string" && { note: obj.note }),
+				...(typeof obj.color === "string" && { color: obj.color }),
+				...(typeof obj.duration === "number" && {
+					duration: roundMediaTime({ time: obj.duration }),
+				}),
+			};
+		})
+		.filter((b): b is Bookmark => b !== null);
+}
+
+class StorageService {
+	private projectsAdapter: IndexedDBAdapter<SerializedProject>;
+	private savedSoundsAdapter: IndexedDBAdapter<SavedSoundsData>;
+	private config: StorageConfig;
+	private migrationsPromise: Promise<void> | null = null;
+	private userScope: string | null = null;
+
+	constructor() {
+		this.config = {
+			projectsDb: "video-editor-projects",
+			mediaDb: "video-editor-media",
+			savedSoundsDb: "video-editor-saved-sounds",
+			version: 1,
+		};
+
+		this.projectsAdapter = new IndexedDBAdapter<SerializedProject>({
+			dbName: this.config.projectsDb,
+			storeName: "projects",
+			version: this.config.version,
+		});
+
+		this.savedSoundsAdapter = new IndexedDBAdapter<SavedSoundsData>({
+			dbName: this.config.savedSoundsDb,
+			storeName: "saved-sounds",
+			version: this.config.version,
+		});
+	}
+
+	setUserScope({ userId }: { userId?: string | null }): void {
+		const normalized = userId
+			? `user_${userId.replace(/[^a-zA-Z0-9_-]/g, "_")}`
+			: null;
+		if (this.userScope === normalized) return;
+		this.userScope = normalized;
+
+		const prefix = this.userScope ? `${this.userScope}-` : "";
+		this.config.projectsDb = `${prefix}video-editor-projects`;
+		this.config.mediaDb = `${prefix}video-editor-media`;
+		this.config.savedSoundsDb = `${prefix}video-editor-saved-sounds`;
+
+		this.projectsAdapter = new IndexedDBAdapter<SerializedProject>({
+			dbName: this.config.projectsDb,
+			storeName: "projects",
+			version: this.config.version,
+		});
+
+		this.savedSoundsAdapter = new IndexedDBAdapter<SavedSoundsData>({
+			dbName: this.config.savedSoundsDb,
+			storeName: "saved-sounds",
+			version: this.config.version,
+		});
+	}
+
+	getUserScope(): string | null {
+		return this.userScope;
+	}
+
+	private async ensureMigrations(): Promise<void> {
+		if (this.migrationsPromise) {
+			await this.migrationsPromise;
+			return;
+		}
+
+		this.migrationsPromise = runStorageMigrations({ migrations }).then(
+			() => undefined,
+		);
+		await this.migrationsPromise;
+	}
+
+	private getProjectMediaAdapters({ projectId }: { projectId: string }) {
+		const prefix = this.userScope ? `${this.userScope}-` : "";
+		const mediaMetadataAdapter = new IndexedDBAdapter<MediaAssetData>({
+			dbName: `${this.config.mediaDb}-${projectId}`,
+			storeName: "media-metadata",
+			version: this.config.version,
+		});
+
+		const mediaAssetsAdapter = new OPFSAdapter(`${prefix}media-files-${projectId}`);
+
+		return { mediaMetadataAdapter, mediaAssetsAdapter };
+	}
+
+	async canStoreFile({
+		size,
+	}: {
+		size: number;
+	}): Promise<StorageCapacityCheckResult> {
+		const quotaStatus = await readStorageQuotaStatus();
+		return evaluateStorageCapacity({
+			requiredBytes: size,
+			quotaStatus,
+		});
+	}
+
+	isQuotaExceededError({ error }: { error: unknown }): boolean {
+		return isStorageQuotaExceededError({ error });
+	}
+
+	private stripAudioBuffers({ tracks }: { tracks: SceneTracks }): SceneTracks {
+		return {
+			...tracks,
+			audio: tracks.audio.map((track) => ({
+				...track,
+				elements: track.elements.map((element) => {
+					const { buffer: _buffer, ...rest } = element;
+					return rest;
+				}),
+			})),
+		};
+	}
+
+	async saveProject({ project }: { project: TProject }): Promise<void> {
+		const duration =
+			project.metadata.duration ??
+			getProjectDurationFromScenes({ scenes: project.scenes });
+		const serializedScenes: SerializedScene[] = project.scenes.map((scene) => ({
+			id: scene.id,
+			name: scene.name,
+			isMain: scene.isMain,
+			tracks: this.stripAudioBuffers({ tracks: scene.tracks }),
+			bookmarks: scene.bookmarks,
+			createdAt: scene.createdAt.toISOString(),
+			updatedAt: scene.updatedAt.toISOString(),
+		}));
+
+		const serializedProject: SerializedProject = {
+			metadata: {
+				id: project.metadata.id,
+				name: project.metadata.name,
+				thumbnail: project.metadata.thumbnail,
+				duration,
+				createdAt: project.metadata.createdAt.toISOString(),
+				updatedAt: project.metadata.updatedAt.toISOString(),
+			},
+			scenes: serializedScenes,
+			currentSceneId: project.currentSceneId,
+			settings: project.settings,
+			version: project.version,
+			timelineViewState: project.timelineViewState,
+		};
+
+		await this.projectsAdapter.set({
+			key: project.metadata.id,
+			value: serializedProject,
+		});
+	}
+
+	async loadProject({
+		id,
+	}: {
+		id: string;
+	}): Promise<{ project: TProject } | null> {
+		await this.ensureMigrations();
+		const serializedProject = await this.projectsAdapter.get(id);
+
+		if (!serializedProject) return null;
+
+		if (
+			typeof serializedProject !== "object" ||
+			serializedProject === null ||
+			typeof serializedProject.metadata !== "object" ||
+			serializedProject.metadata === null
+		) {
+			console.warn(
+				"[storage] Skipping malformed project entry (missing metadata):",
+				{ id, entry: serializedProject },
+			);
+			return null;
+		}
+
+		const scenes =
+			serializedProject.scenes?.map((scene) => ({
+				id: scene.id,
+				name: scene.name,
+				isMain: scene.isMain,
+				tracks: scene.tracks,
+				bookmarks: normalizeBookmarks({ raw: scene.bookmarks }),
+				createdAt: new Date(scene.createdAt),
+				updatedAt: new Date(scene.updatedAt),
+			})) ?? [];
+
+		const project: TProject = {
+			metadata: {
+				id: serializedProject.metadata.id,
+				name: serializedProject.metadata.name,
+				thumbnail: serializedProject.metadata.thumbnail,
+				duration: roundMediaTime({
+					time:
+						serializedProject.metadata.duration ??
+						getProjectDurationFromScenes({ scenes }),
+				}),
+				createdAt: new Date(serializedProject.metadata.createdAt),
+				updatedAt: new Date(serializedProject.metadata.updatedAt),
+			},
+			scenes,
+			currentSceneId: serializedProject.currentSceneId || "",
+			settings: serializedProject.settings,
+			version: serializedProject.version,
+			timelineViewState: serializedProject.timelineViewState,
+		};
+
+		return { project };
+	}
+
+	async loadAllProjects(): Promise<TProject[]> {
+		const projectIds = await this.projectsAdapter.list();
+		const projects: TProject[] = [];
+
+		for (const id of projectIds) {
+			const result = await this.loadProject({ id });
+			if (result?.project) {
+				projects.push(result.project);
+			}
+		}
+
+		return projects.sort(
+			(a, b) => b.metadata.updatedAt.getTime() - a.metadata.updatedAt.getTime(),
+		);
+	}
+
+	async loadAllProjectsMetadata(): Promise<TProjectMetadata[]> {
+		await this.ensureMigrations();
+		const serializedProjects = await this.projectsAdapter.getAll();
+
+		const metadata: TProjectMetadata[] = [];
+		for (const serializedProject of serializedProjects) {
+			if (
+				typeof serializedProject !== "object" ||
+				serializedProject === null ||
+				typeof serializedProject.metadata !== "object" ||
+				serializedProject.metadata === null
+			) {
+				console.warn(
+					"[storage] Skipping malformed project entry (missing metadata):",
+					serializedProject,
+				);
+				continue;
+			}
+
+			metadata.push({
+				id: serializedProject.metadata.id,
+				name: serializedProject.metadata.name,
+				thumbnail: serializedProject.metadata.thumbnail,
+				duration: roundMediaTime({
+					time:
+						serializedProject.metadata.duration ??
+						getProjectDurationFromScenes({
+							scenes: (serializedProject.scenes ?? []) as unknown as TScene[],
+						}),
+				}),
+				createdAt: new Date(serializedProject.metadata.createdAt),
+				updatedAt: new Date(serializedProject.metadata.updatedAt),
+			});
+		}
+
+		return metadata.sort(
+			(a, b) => b.updatedAt.getTime() - a.updatedAt.getTime(),
+		);
+	}
+
+	async deleteProject({ id }: { id: string }): Promise<void> {
+		await this.projectsAdapter.remove(id);
+	}
+
+	async saveMediaAsset({
+		projectId,
+		mediaAsset,
+	}: {
+		projectId: string;
+		mediaAsset: MediaAsset;
+	}): Promise<void> {
+		const { mediaMetadataAdapter, mediaAssetsAdapter } =
+			this.getProjectMediaAdapters({ projectId });
+
+		const metadata: MediaAssetData = {
+			id: mediaAsset.id,
+			name: mediaAsset.name,
+			type: mediaAsset.type,
+			size: mediaAsset.file.size,
+			lastModified: mediaAsset.file.lastModified,
+			width: mediaAsset.width,
+			height: mediaAsset.height,
+			duration: mediaAsset.duration,
+			fps: mediaAsset.fps,
+			hasAudio: mediaAsset.hasAudio,
+			thumbnailUrl: mediaAsset.thumbnailUrl,
+			ephemeral: mediaAsset.ephemeral,
+			// Native-custody assets (zero-byte stub file) live behind their
+			// converted proxy URL — persist it or reopened projects rehydrate
+			// a dead object-URL-of-zero-bytes (found on device 2026-08-19).
+			// Blob-backed assets get NO persisted url: their object URLs are
+			// session-scoped and regenerated in loadMediaAsset. The absolute
+			// url is only a same-install fallback — the durable identity is
+			// the container-relative path (media/native-paths.ts).
+			url: mediaAsset.file.size === 0 ? mediaAsset.url : undefined,
+			nativeRelativePath: mediaAsset.nativeRelativePath,
+			thumbnailNativeRelativePath: mediaAsset.thumbnailNativeRelativePath,
+			sourceNativeRelativePath: mediaAsset.sourceNativeRelativePath,
+			sourceRotationDegrees: mediaAsset.sourceRotationDegrees,
+			sourceWidth: mediaAsset.sourceWidth,
+			sourceHeight: mediaAsset.sourceHeight,
+		};
+
+		try {
+			await mediaAssetsAdapter.set({
+				key: mediaAsset.id,
+				value: mediaAsset.file,
+			});
+			await mediaMetadataAdapter.set({
+				key: mediaAsset.id,
+				value: metadata,
+			});
+		} catch (error) {
+			try {
+				await mediaAssetsAdapter.remove(mediaAsset.id);
+			} catch {
+				// Ignore cleanup failures so the original storage error is preserved.
+			}
+
+			if (this.isQuotaExceededError({ error })) {
+				throw new StorageQuotaExceededError({
+					requiredBytes: mediaAsset.file.size,
+				});
+			}
+
+			throw error;
+		}
+	}
+
+	async loadMediaAsset({
+		projectId,
+		id,
+	}: {
+		projectId: string;
+		id: string;
+	}): Promise<MediaAsset | null> {
+		const { mediaMetadataAdapter, mediaAssetsAdapter } =
+			this.getProjectMediaAdapters({ projectId });
+
+		const [file, metadata] = await Promise.all([
+			mediaAssetsAdapter.get(id),
+			mediaMetadataAdapter.get(id),
+		]);
+
+		if (!file || !metadata) return null;
+
+		// Native-custody asset: the stored file is the zero-byte stub and the
+		// playable bytes live on the native filesystem. Prefer re-anchoring
+		// the container-RELATIVE path to the CURRENT custody root — the
+		// persisted absolute url dies whenever iOS rotates the app container
+		// UUID (every update/reinstall; found live 2026-08-19). URLs saved
+		// before relative-path support get a best-effort salvage: the files
+		// survive the rotation (iOS migrates Application Support), only the
+		// path prefix changed.
+		let rebasedUrl = metadata.nativeRelativePath
+			? resolveNativeMediaPath(metadata.nativeRelativePath)
+			: null;
+		if (!rebasedUrl && metadata.url) {
+			const salvaged = salvageRelativeMediaPathFromStaleUrl(metadata.url);
+			if (salvaged) rebasedUrl = resolveNativeMediaPath(salvaged);
+		}
+
+		let url: string | undefined;
+		if (rebasedUrl) {
+			url = rebasedUrl;
+		} else if (metadata.url) {
+			url = metadata.url;
+		} else if (file.size === 0) {
+			// Dead legacy native asset (saved before ANY url/relative-path
+			// persistence existed): the stored file is the zero-byte stub and
+			// no pointer to the native bytes survives. Leave url undefined —
+			// the scene builder skips url-less assets — instead of the old
+			// behavior of wrapping the stub in an object URL, which fed the
+			// decoder a zero-byte blob and produced an endless error storm on
+			// device (2026-08-19). Re-importing the clip is the only recovery.
+			console.warn(
+				`[finalcliper] media asset ${metadata.id} ("${metadata.name}") predates durable native paths — re-import it to restore playback`,
+			);
+			url = undefined;
+		} else if (metadata.type === "image" && (!file.type || file.type === "")) {
+			try {
+				const text = await file.text();
+				if (text.trim().startsWith("<svg")) {
+					const svgBlob = new Blob([text], { type: "image/svg+xml" });
+					url = URL.createObjectURL(svgBlob);
+				} else {
+					url = URL.createObjectURL(file);
+				}
+			} catch {
+				url = URL.createObjectURL(file);
+			}
+		} else {
+			url = URL.createObjectURL(file);
+		}
+
+		return {
+			id: metadata.id,
+			name: metadata.name,
+			type: metadata.type,
+			file,
+			url,
+			width: metadata.width,
+			height: metadata.height,
+			duration: metadata.duration,
+			fps: metadata.fps,
+			hasAudio: metadata.hasAudio,
+			thumbnailUrl:
+				(metadata.thumbnailNativeRelativePath
+					? resolveNativeMediaPath(metadata.thumbnailNativeRelativePath)
+					: null) ??
+				(metadata.thumbnailUrl
+					? (() => {
+							const salvaged = salvageRelativeMediaPathFromStaleUrl(
+								metadata.thumbnailUrl,
+							);
+							return salvaged ? resolveNativeMediaPath(salvaged) : null;
+						})()
+					: null) ??
+				metadata.thumbnailUrl,
+			ephemeral: metadata.ephemeral,
+			nativeRelativePath: metadata.nativeRelativePath,
+			thumbnailNativeRelativePath: metadata.thumbnailNativeRelativePath,
+			sourceNativeRelativePath: metadata.sourceNativeRelativePath,
+			sourceRotationDegrees: metadata.sourceRotationDegrees,
+			sourceWidth: metadata.sourceWidth,
+			sourceHeight: metadata.sourceHeight,
+		};
+	}
+
+	async loadAllMediaAssets({
+		projectId,
+	}: {
+		projectId: string;
+	}): Promise<MediaAsset[]> {
+		const { mediaMetadataAdapter } = this.getProjectMediaAdapters({
+			projectId,
+		});
+
+		const mediaIds = await mediaMetadataAdapter.list();
+		const mediaItems: MediaAsset[] = [];
+
+		for (const id of mediaIds) {
+			const item = await this.loadMediaAsset({ projectId, id });
+			if (item) {
+				mediaItems.push(item);
+			}
+		}
+
+		return mediaItems;
+	}
+
+	async deleteMediaAsset({
+		projectId,
+		id,
+	}: {
+		projectId: string;
+		id: string;
+	}): Promise<void> {
+		const { mediaMetadataAdapter, mediaAssetsAdapter } =
+			this.getProjectMediaAdapters({ projectId });
+
+		await Promise.all([
+			mediaAssetsAdapter.remove(id),
+			mediaMetadataAdapter.remove(id),
+		]);
+	}
+
+	async deleteProjectMedia({
+		projectId,
+	}: {
+		projectId: string;
+	}): Promise<void> {
+		const { mediaMetadataAdapter, mediaAssetsAdapter } =
+			this.getProjectMediaAdapters({ projectId });
+
+		await Promise.all([
+			mediaMetadataAdapter.clear(),
+			mediaAssetsAdapter.clear(),
+		]);
+	}
+
+	async clearAllData(): Promise<void> {
+		await this.projectsAdapter.clear();
+		// project-specific media and timelines cleaned up when projects are deleted
+	}
+
+	async getStorageInfo(): Promise<{
+		projects: number;
+		isOPFSSupported: boolean;
+		isIndexedDBSupported: boolean;
+	}> {
+		const projectIds = await this.projectsAdapter.list();
+
+		return {
+			projects: projectIds.length,
+			isOPFSSupported: this.isOPFSSupported(),
+			isIndexedDBSupported: this.isIndexedDBSupported(),
+		};
+	}
+
+	async getProjectStorageInfo({ projectId }: { projectId: string }): Promise<{
+		mediaItems: number;
+	}> {
+		const { mediaMetadataAdapter } = this.getProjectMediaAdapters({
+			projectId,
+		});
+
+		const mediaIds = await mediaMetadataAdapter.list();
+
+		return {
+			mediaItems: mediaIds.length,
+		};
+	}
+
+	async loadSavedSounds(): Promise<SavedSoundsData> {
+		try {
+			const savedSoundsData = await this.savedSoundsAdapter.get("user-sounds");
+			return (
+				savedSoundsData || {
+					sounds: [],
+					lastModified: new Date().toISOString(),
+				}
+			);
+		} catch (error) {
+			console.error("Failed to load saved sounds:", error);
+			return { sounds: [], lastModified: new Date().toISOString() };
+		}
+	}
+
+	async saveSoundEffect({
+		soundEffect,
+	}: {
+		soundEffect: SoundEffect;
+	}): Promise<void> {
+		try {
+			const currentData = await this.loadSavedSounds();
+
+			if (currentData.sounds.some((sound) => sound.id === soundEffect.id)) {
+				return; // Already saved
+			}
+
+			const savedSound: SavedSound = {
+				id: soundEffect.id,
+				name: soundEffect.name,
+				username: soundEffect.username,
+				previewUrl: soundEffect.previewUrl,
+				downloadUrl: soundEffect.downloadUrl,
+				duration: soundEffect.duration,
+				tags: soundEffect.tags,
+				license: soundEffect.license,
+				savedAt: new Date().toISOString(),
+			};
+
+			const updatedData: SavedSoundsData = {
+				sounds: [...currentData.sounds, savedSound],
+				lastModified: new Date().toISOString(),
+			};
+
+			await this.savedSoundsAdapter.set({
+				key: "user-sounds",
+				value: updatedData,
+			});
+		} catch (error) {
+			console.error("Failed to save sound effect:", error);
+			throw error;
+		}
+	}
+
+	async removeSavedSound({ soundId }: { soundId: number }): Promise<void> {
+		try {
+			const currentData = await this.loadSavedSounds();
+
+			const updatedData: SavedSoundsData = {
+				sounds: currentData.sounds.filter((sound) => sound.id !== soundId),
+				lastModified: new Date().toISOString(),
+			};
+
+			await this.savedSoundsAdapter.set({
+				key: "user-sounds",
+				value: updatedData,
+			});
+		} catch (error) {
+			console.error("Failed to remove saved sound:", error);
+			throw error;
+		}
+	}
+
+	async isSoundSaved({ soundId }: { soundId: number }): Promise<boolean> {
+		try {
+			const currentData = await this.loadSavedSounds();
+			return currentData.sounds.some((sound) => sound.id === soundId);
+		} catch (error) {
+			console.error("Failed to check if sound is saved:", error);
+			return false;
+		}
+	}
+
+	async clearSavedSounds(): Promise<void> {
+		try {
+			await this.savedSoundsAdapter.remove("user-sounds");
+		} catch (error) {
+			console.error("Failed to clear saved sounds:", error);
+			throw error;
+		}
+	}
+
+	isOPFSSupported(): boolean {
+		return OPFSAdapter.isSupported();
+	}
+
+	isIndexedDBSupported(): boolean {
+		return "indexedDB" in window;
+	}
+
+	isFullySupported(): boolean {
+		return this.isIndexedDBSupported() && this.isOPFSSupported();
+	}
+}
+
+export const storageService = new StorageService();
+export { StorageService };
