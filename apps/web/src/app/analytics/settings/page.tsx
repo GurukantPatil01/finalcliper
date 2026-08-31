@@ -14,7 +14,7 @@ import { saveInstagramConnection } from "@/services/instagram/connection";
 
 const CONNECT_URL = "/api/instagram/oauth/start?returnTo=/analytics/settings";
 // Client component — direct static access so the bundler inlines the value.
-const AI_ENABLED = process.env.NEXT_PUBLIC_AI_ENABLED === "true";
+const AI_ENABLED = process.env.NEXT_PUBLIC_AI_ENABLED !== "false";
 
 function SettingsInner() {
 	const searchParams = useSearchParams();

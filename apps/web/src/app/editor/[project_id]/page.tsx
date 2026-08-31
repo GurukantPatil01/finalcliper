@@ -82,7 +82,7 @@ function DegradedRendererBanner() {
 
 function EditorLayout() {
 	usePasteMedia();
-	const aiEnabled = process.env.NEXT_PUBLIC_AI_ENABLED === "true";
+	const aiEnabled = process.env.NEXT_PUBLIC_AI_ENABLED !== "false";
 	const chatPanelRef = useRef<ImperativePanelHandle>(null);
 	const [chatCollapsed, setChatCollapsed] = useState(false);
 	const { panels, setPanel } = usePanelStore();
