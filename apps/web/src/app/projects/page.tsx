@@ -35,12 +35,11 @@ import {
 	BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
 import {
-	Calendar04Icon,
+
 	GridViewIcon,
 	LeftToRightListDashIcon,
 	PlusSignIcon,
 	Search01Icon,
-	Video01Icon,
 	MoreHorizontalIcon,
 	Delete02Icon,
 	Copy01Icon,
@@ -112,7 +111,7 @@ export default function ProjectsPage() {
 			<ChangelogNotification />
 			<ProjectsHeader />
 			<ProjectsToolbar projectIds={projectsToDisplay.map((p) => p.id)} />
-			<main className="mx-auto px-4 pt-2 pb-6 flex flex-col gap-4">
+			<main className="mx-auto max-w-[88rem] px-6 pt-2 pb-10 lg:px-10">
 				{isLoading || !isInitialized ? (
 					<ProjectsSkeleton />
 				) : projectsToDisplay.length === 0 ? (
@@ -121,8 +120,8 @@ export default function ProjectsPage() {
 					<div
 						className={
 							viewMode === "grid"
-								? "xs:grid-cols-2 grid grid-cols-1 gap-6 sm:grid-cols-3 lg:grid-cols-4 px-4"
-								: "flex flex-col"
+								? "xs:grid-cols-2 grid grid-cols-1 gap-x-6 gap-y-10 sm:grid-cols-3 lg:grid-cols-4"
+								: "flex flex-col border-t border-border"
 						}
 					>
 						{projectsToDisplay.map((project) => (
@@ -143,36 +142,35 @@ function ProjectsHeader() {
 	const { viewMode, isHydrated, setViewMode } = useProjectsStore();
 
 	return (
-		<header className="sticky top-0 z-20 px-8 bg-background flex flex-col gap-2">
-			<div className="flex items-center justify-between h-16 pt-2">
-				<div className="flex items-center gap-5">
+		<header className="sticky top-0 z-20 bg-background/95 backdrop-blur-sm supports-[backdrop-filter]:bg-background/80">
+			<div className="mx-auto flex max-w-[88rem] items-center justify-between px-6 pt-4 lg:px-10">
+				<div className="flex items-baseline gap-5">
 					<Breadcrumb>
 						<BreadcrumbList>
 							<BreadcrumbItem>
 								<BreadcrumbLink asChild>
-									<Link href="/" className="text-sm sm:text-base">
+									<Link href="/" className="text-sm text-muted-foreground hover:text-foreground">
 										Home
 									</Link>
 								</BreadcrumbLink>
 							</BreadcrumbItem>
 							<BreadcrumbSeparator />
 							<BreadcrumbItem>
-								<BreadcrumbPage className="text-sm sm:text-base font-medium">
-									All projects
-								</BreadcrumbPage>
+								<BreadcrumbPage className="text-sm font-medium">All projects</BreadcrumbPage>
 							</BreadcrumbItem>
 						</BreadcrumbList>
 					</Breadcrumb>
 
-					<div className="hidden md:flex items-center rounded-md border p-1 px-1.5 h-10">
-						{VIEW_MODE_OPTIONS.map(({ mode, icon, label }) => (
+					<div className="hidden items-center rounded-sm border border-border md:flex">
+						{VIEW_MODE_OPTIONS.map(({ mode, icon, label }, i) => (
 							<Button
 								key={mode}
 								variant="ghost"
 								size="icon"
 								className={cn(
-									"rounded-sm hover:bg-background",
-									isHydrated && viewMode === mode && "!bg-accent",
+									"h-8 w-8 rounded-none hover:bg-accent",
+									i === 0 && "border-r border-border",
+									isHydrated && viewMode === mode && "!bg-foreground !text-background hover:!bg-foreground",
 								)}
 								onClick={() => setViewMode({ viewMode: mode })}
 								aria-label={label}
@@ -185,13 +183,15 @@ function ProjectsHeader() {
 				</div>
 
 				<div className="flex items-center gap-3 md:gap-4">
-					<SearchBar className="hidden md:block" />
-					<ApiKeysButton className="h-10 text-xs px-3" />
+					<SearchBar className="hidden w-56 md:block" />
+					<ApiKeysButton className="h-9 rounded-sm border border-border bg-transparent text-xs px-3 shadow-none hover:bg-accent" />
 					<NewProjectButton />
-					<UserAuthButton variant="outline" size="default" className="h-10 text-xs px-3" />
+					<UserAuthButton variant="outline" size="default" className="h-9 rounded-sm text-xs px-3" />
 				</div>
 			</div>
-			<SearchBar className="block md:hidden mb-4" />
+			<div className="mx-auto max-w-[88rem] px-6 md:hidden">
+				<SearchBar className="mt-3 mb-1" />
+			</div>
 		</header>
 	);
 }
@@ -230,14 +230,14 @@ function ProjectsToolbar({ projectIds }: { projectIds: string[] }) {
 	};
 
 	return (
-		<div className="sticky top-16 z-10 flex items-center justify-between px-6 h-14 pt-2 bg-background">
+		<div className="sticky top-16 z-10 mx-auto flex h-12 max-w-[88rem] items-center justify-between border-b border-border px-6 lg:px-10">
 			<div className="flex items-center gap-2">
 				<Label
-					className="flex items-center gap-3 cursor-pointer px-2"
+					className="flex cursor-pointer items-center gap-3 px-2"
 					htmlFor="select-all-projects"
 				>
 					<Checkbox
-						className="size-5"
+						className="size-4 rounded-sm border-foreground/30 data-[state=checked]:bg-primary data-[state=checked]:border-primary data-[state=indeterminate]:bg-primary data-[state=indeterminate]:border-primary"
 						id="select-all-projects"
 						checked={
 							isAllSelected ? true : hasSomeSelected ? "indeterminate" : false
@@ -522,7 +522,7 @@ function NewProjectButton() {
 	return (
 		<Button
 			size="lg"
-			className="flex px-5 md:px-6"
+			className="rounded-sm px-5 md:px-6 font-medium"
 			onClick={handleCreateProject}
 		>
 			<span className="text-sm font-medium hidden md:block">New project</span>
@@ -582,8 +582,8 @@ function ProjectItem({
 	};
 
 	const gridContent = (
-		<Card className="bg-background overflow-hidden border-none p-0">
-			<div className="bg-muted relative aspect-video">
+		<Card className="overflow-hidden border border-border bg-card p-0 shadow-none transition-colors group-hover:border-foreground/30">
+			<div className="relative aspect-video bg-muted">
 				<div className="absolute inset-0">
 					{project.thumbnail ? (
 						<Image
@@ -594,24 +594,23 @@ function ProjectItem({
 						/>
 					) : (
 						<div className="flex size-full items-center justify-center">
-							<OcVideoIcon className="text-muted-foreground size-12 shrink-0" />
+							<OcVideoIcon className="text-muted-foreground size-10 shrink-0" />
 						</div>
 					)}
 				</div>
 
 				{durationLabel && (
-					<div className="absolute bottom-2 right-2 bg-black/60 text-white text-xs font-semibold px-2 py-1 rounded-sm">
+					<div className="tabular absolute bottom-2 right-2 rounded-[2px] bg-black/70 px-1.5 py-0.5 text-[11px] font-medium text-white">
 						{durationLabel}
 					</div>
 				)}
 			</div>
 
-			<CardContent className="flex flex-col gap-2 px-0 pt-4">
-				<h3 className="group-hover:text-foreground/90 line-clamp-2 text-sm leading-snug font-medium">
+			<CardContent className="flex flex-col gap-1.5 px-4 pt-3 pb-4">
+				<h3 className="line-clamp-2 text-sm leading-snug font-medium tracking-tight text-card-foreground">
 					{project.name}
 				</h3>
-				<div className="text-muted-foreground flex items-center gap-1.5 text-sm">
-					<HugeiconsIcon icon={Calendar04Icon} className="size-4" />
+				<div className="editorial-label flex items-center gap-1.5 text-muted-foreground normal-case tracking-normal">
 					<span>Created {formatDate({ date: project.createdAt })}</span>
 				</div>
 			</CardContent>
@@ -620,7 +619,7 @@ function ProjectItem({
 
 	const listRowContent = (
 		<div className="flex items-center gap-3 flex-1 min-w-0">
-			<div className="bg-muted relative size-10 rounded overflow-hidden shrink-0">
+			<div className="relative size-10 shrink-0 overflow-hidden rounded-[2px] border border-border bg-muted">
 				{project.thumbnail ? (
 					<Image
 						src={project.thumbnail}
@@ -639,7 +638,7 @@ function ProjectItem({
 				{project.name}
 			</h3>
 
-			<span className="text-muted-foreground text-sm shrink-0 hidden sm:block">
+			<span className="tabular text-muted-foreground shrink-0 text-sm hidden sm:block">
 				{durationLabel ?? "—"}
 			</span>
 
@@ -651,9 +650,9 @@ function ProjectItem({
 
 	const listContent = (
 		<div
-			className={`flex items-center gap-4 py-2 px-4 border-b border-border/50 ${
-				isSelected ? "bg-primary/5" : ""
-			}`}
+			className={`flex items-center gap-4 border-b border-border px-4 py-2.5 ${
+				isSelected ? "bg-accent shadow-[inset_2px_0_0_var(--primary)]" : ""
+			}} hover:bg-accent/60`}
 		>
 			<Checkbox
 				checked={isSelected}
@@ -707,7 +706,7 @@ function ProjectItem({
 										});
 									}}
 									onCheckedChange={() => {}}
-									className={`absolute z-10 size-5 top-3 left-3 ${
+									className={`absolute z-10 size-4 rounded-sm top-3 left-3 ${
 										isSelected || isDropdownOpen
 											? "opacity-100"
 											: "opacity-0 group-hover:opacity-100"
@@ -973,23 +972,16 @@ function EmptyState() {
 
 	if (savedProjects.length > 0) {
 		return (
-			<div className="flex flex-col items-center justify-center gap-5 py-16 text-center">
-				<div className="flex flex-col items-center gap-8">
-					<HugeiconsIcon
-						icon={Search01Icon}
-						className="text-muted-foreground size-16 bg-accent/35 border rounded-md p-4"
-					/>
-					<div className="flex flex-col items-center gap-3">
-						<h3 className="text-lg font-medium">No results found</h3>
-						<p className="text-muted-foreground max-w-md">
-							Your search for "{searchQuery}" did not return any results.
-						</p>
-					</div>
-				</div>
+<div className="mx-auto mt-8 flex max-w-md flex-col items-center border border-border bg-card px-8 py-14 text-center">
+				<p className="editorial-label text-muted-foreground">Search</p>
+				<h3 className="mt-3 text-xl font-semibold tracking-tight">No results found</h3>
+				<p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+					Your search for "{searchQuery}" did not return any projects.
+				</p>
 				<Button
 					onClick={() => setSearchQuery({ query: "" })}
 					variant="outline"
-					size="lg"
+					className="mt-6 rounded-sm"
 				>
 					Clear search
 				</Button>
@@ -998,24 +990,17 @@ function EmptyState() {
 	}
 
 	return (
-		<div className="flex flex-col items-center justify-center gap-6 py-16 text-center">
-			<div className="flex flex-col items-center gap-2">
-				<div className="bg-muted/30 flex size-16 items-center justify-center rounded-full">
-					<HugeiconsIcon
-						icon={Video01Icon}
-						className="text-muted-foreground size-8"
-					/>
-				</div>
-				<h3 className="text-lg font-medium">No projects yet</h3>
-				<p className="text-muted-foreground max-w-md">
-					Start creating your first project. Import media, edit, and export your
-					videos. All privately.
+<div className="mx-auto mt-8 flex max-w-lg flex-col items-center border border-border bg-card px-8 py-16 text-center">
+				<p className="editorial-label text-muted-foreground">Projects</p>
+				<h3 className="mt-3 text-2xl font-semibold tracking-tight">Nothing on the shelf yet</h3>
+				<p className="mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
+					Create your first project to import media, cut on the timeline and export —
+					all stored privately on this device.
 				</p>
+				<Button size="lg" className="mt-7 gap-2 rounded-sm px-7 font-medium" onClick={handleCreateProject}>
+					<HugeiconsIcon icon={PlusSignIcon} />
+					Create your first project
+				</Button>
 			</div>
-			<Button size="lg" className="gap-2" onClick={handleCreateProject}>
-				<HugeiconsIcon icon={PlusSignIcon} />
-				Create your first project
-			</Button>
-		</div>
 	);
 }
