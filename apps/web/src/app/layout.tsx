@@ -1,5 +1,6 @@
 import { ClerkProvider } from "@clerk/nextjs";
 import { ThemeProvider } from "next-themes";
+import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 import { Toaster } from "../components/ui/sonner";
 import { TooltipProvider } from "../components/ui/tooltip";
@@ -28,6 +29,7 @@ export default function RootLayout({
 							<InstagramOAuthSync />
 							<AuthSyncProvider>{children}</AuthSyncProvider>
 						</TooltipProvider>
+						<Analytics />
 					</ThemeProvider>
 				</body>
 			</html>
