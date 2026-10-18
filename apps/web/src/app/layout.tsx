@@ -6,6 +6,7 @@ import { TooltipProvider } from "../components/ui/tooltip";
 import { baseMetaData } from "./metadata";
 import { AuthSyncProvider } from "../components/providers/auth-sync-provider";
 import { InstagramOAuthSync } from "../components/providers/instagram-oauth-sync";
+import { Analytics } from "@vercel/analytics/next";
 
 export const metadata = baseMetaData;
 
@@ -29,6 +30,7 @@ export default function RootLayout({
 							<AuthSyncProvider>{children}</AuthSyncProvider>
 						</TooltipProvider>
 					</ThemeProvider>
+					<Analytics />
 				</body>
 			</html>
 		</ClerkProvider>
